@@ -181,7 +181,7 @@ class ViewTimeout {
     this.timer = setTimeout(() => this.executeRedirect(), this.timeoutDuration);
   }
 
-  executeRedirect() {
+executeRedirect() {
     // Double check we are still on the right dashboard
     if (this.ha?.hass?.panelUrl !== this.activePanelUrl) {
         this.stopTimer();
@@ -199,9 +199,15 @@ class ViewTimeout {
     const target = this.viewSpecificRedirects[currentView] ?? this.homeView;
 
     if (target) {
-        this.navigate(`/${this.activePanelUrl}/${target}`);
+        // If target starts with "/", treat it as an absolute path
+        // (a different dashboard). Otherwise treat it as a view
+        // within the current dashboard, as before.
+        const path = target.startsWith("/")
+            ? target
+            : `/${this.activePanelUrl}/${target}`;
+        this.navigate(path);
     }
-  }
+}
 
   navigate(path) {
     window.history.pushState(null, "", path);
