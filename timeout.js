@@ -1,3 +1,26 @@
+/*
+ * Modified from BWilky/viewtimeout (timeout.js). Changes:
+ *
+ * 1. Absolute redirect targets — `default` / per-view targets in
+ *    `views:` are now treated as full paths (e.g. "dashboard-kiosk/0"),
+ *    not a view name within the current dashboard. The original
+ *    always prefixed the target with the current dashboard's
+ *    panelUrl, which made cross-dashboard redirects impossible.
+ *
+ * 2. Global config via `view_timeout_global:` — add this block
+ *    (same shape as `view_timeout:`) to any one dashboard's YAML to
+ *    define a fallback config for every other dashboard. It's
+ *    cached in memory the first time that dashboard is visited in
+ *    the browser session (handleDashboardChange), and any dashboard
+ *    without its own `view_timeout:` block uses the cached value.
+ *    A dashboard's own `view_timeout:` block still takes priority
+ *    over the cache when present.
+ *
+ * 3. No hardcoded fallback values — if a dashboard has neither its
+ *    own `view_timeout:` nor a cached global config, the script
+ *    stays fully dormant (isEnabled = false) instead of activating
+ *    with baked-in defaults.
+ */
 class ViewTimeout {
   constructor() {
     this.timer = null;
@@ -8,13 +31,15 @@ class ViewTimeout {
     // define its own `view_timeout:` block in its YAML.
     // Set by adding a `view_timeout_global:` block (same shape as
     // `view_timeout:`) to ANY one dashboard's YAML. The first time
-    // that dashboard is visited in this browser session, its
-    // view_timeout_global block is cached here and used as the
-    // fallback for every other dashboard from then on. No hardcoded
-    // values — until a dashboard with that tag has been visited,
-    // this stays null and dashboards without their own view_timeout
-    // block stay dormant.
-    this.globalConfig = null;
+    // that dashboard is visited, its view_timeout_global block is
+    // cached here AND persisted to localStorage, so it survives page
+    // reloads without needing to revisit that dashboard first. No
+    // hardcoded values — until a dashboard with that tag has been
+    // visited at least once (ever, on this browser), this stays null
+    // and dashboards without their own view_timeout block stay
+    // dormant.
+    this.globalConfigStorageKey = "viewtimeout_global_config";
+    this.globalConfig = this.loadCachedGlobalConfig();
 
     // State
     this.activePanelUrl = null; // The dashboard we are currently "serving"
@@ -51,6 +76,32 @@ class ViewTimeout {
       console.error(`%c VIEWTIMEOUT %c ERROR: ${msg}`, style, "color: red;");
     } else {
       console.info(`%c VIEWTIMEOUT %c ${msg}`, style, "color: gray;");
+    }
+  }
+
+  // Reads any previously-cached global config from localStorage so
+  // it's available immediately on load, before this browser has
+  // necessarily (re)visited the dashboard carrying view_timeout_global
+  // in this page load. Returns null if nothing is stored or it can't
+  // be read (e.g. storage disabled/blocked).
+  loadCachedGlobalConfig() {
+    try {
+      const raw = localStorage.getItem(this.globalConfigStorageKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      this.log(`Could not read cached global config from localStorage: ${e}`, true);
+      return null;
+    }
+  }
+
+  // Persists the global config to localStorage whenever it's
+  // (re)discovered from a dashboard's view_timeout_global block, so
+  // it survives page reloads.
+  saveCachedGlobalConfig(config) {
+    try {
+      localStorage.setItem(this.globalConfigStorageKey, JSON.stringify(config));
+    } catch (e) {
+      this.log(`Could not save global config to localStorage: ${e}`, true);
     }
   }
 
@@ -95,10 +146,12 @@ class ViewTimeout {
     this.activePanelUrl = newPanelUrl;
 
     // If this dashboard carries a view_timeout_global block, cache it
-    // (refreshing the cache each visit) so any other dashboard without
-    // its own view_timeout block can fall back to it.
+    // in memory and persist it to localStorage (refreshing both each
+    // visit) so any other dashboard without its own view_timeout
+    // block can fall back to it — even after a page reload.
     if (llConfig.view_timeout_global) {
       this.globalConfig = llConfig.view_timeout_global;
+      this.saveCachedGlobalConfig(this.globalConfig);
       this.log(`Global config cached from /${this.activePanelUrl}`);
     }
 
