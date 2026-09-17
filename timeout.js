@@ -4,6 +4,18 @@ class ViewTimeout {
     this.checkInterval = null;
     this.boundReset = this.resetTimer.bind(this);
 
+    // Global fallback config — used on any dashboard that doesn't
+    // define its own `view_timeout:` block in its YAML.
+    // Set by adding a `view_timeout_global:` block (same shape as
+    // `view_timeout:`) to ANY one dashboard's YAML. The first time
+    // that dashboard is visited in this browser session, its
+    // view_timeout_global block is cached here and used as the
+    // fallback for every other dashboard from then on. No hardcoded
+    // values — until a dashboard with that tag has been visited,
+    // this stays null and dashboards without their own view_timeout
+    // block stay dormant.
+    this.globalConfig = null;
+
     // State
     this.activePanelUrl = null; // The dashboard we are currently "serving"
     this.currentUser = null;
@@ -11,11 +23,11 @@ class ViewTimeout {
     this.timeoutDuration = 15000;
     this.viewSpecificRedirects = {};
     this.isEnabled = false;
-    
+
     // Reset triggers
     this.resetOnMove = false;
     this.resetOnClick = true;
-    
+
     // Start the global watcher
     this.init();
   }
@@ -60,7 +72,7 @@ class ViewTimeout {
     // SCENARIO 1: Dashboard Change Detected
     if (currentPanelUrl !== this.activePanelUrl) {
       this.handleDashboardChange(currentPanelUrl);
-      return; 
+      return;
     }
 
     // SCENARIO 2: We are on the active dashboard, and it is enabled.
@@ -72,45 +84,56 @@ class ViewTimeout {
   handleDashboardChange(newPanelUrl) {
     // 1. Stop any running timers from the previous dashboard
     this.stopTimer();
-    
+
     // 2. Try to find config for this new dashboard
     // It might take a moment for the new ha-panel-lovelace to load its config
     const llConfig = this.lovelace?.lovelace?.config;
 
-    if (llConfig && llConfig.view_timeout) {
-      // Config FOUND. Activate for this dashboard.
-      this.activePanelUrl = newPanelUrl;
-      this.parseConfig(llConfig);
-    } else {
-      // Config NOT FOUND. 
-      // We update the activePanelUrl to prevent constantly retrying this logic every second
-      // But we mark isEnabled as false so we stay dormant.
-      // (Unless llConfig is completely null, meaning it hasn't loaded yet, then we wait and retry next loop)
-      if (this.lovelace?.lovelace) {
-         this.activePanelUrl = newPanelUrl;
-         this.isEnabled = false;
-         // Silent mode: We are on a dashboard that doesn't use ViewTimeout.
-      }
+    // Config hasn't loaded yet — wait and retry next loop.
+    if (!llConfig) return;
+
+    this.activePanelUrl = newPanelUrl;
+
+    // If this dashboard carries a view_timeout_global block, cache it
+    // (refreshing the cache each visit) so any other dashboard without
+    // its own view_timeout block can fall back to it.
+    if (llConfig.view_timeout_global) {
+      this.globalConfig = llConfig.view_timeout_global;
+      this.log(`Global config cached from /${this.activePanelUrl}`);
     }
+
+    // Use this dashboard's own config if it defines one, otherwise
+    // fall back to the cached global config (if any has been seen
+    // yet this session).
+    const config = llConfig.view_timeout ?? this.globalConfig;
+    this.parseConfig({ view_timeout: config });
   }
 
   parseConfig(llConfig) {
-    const config = llConfig.view_timeout || {};
-    
+    // Neither this dashboard's own view_timeout nor a cached global
+    // config exists — stay dormant rather than activating with
+    // fallback defaults.
+    if (!llConfig.view_timeout) {
+      this.isEnabled = false;
+      return;
+    }
+
+    const config = llConfig.view_timeout;
+
     // Global Toggle Check
     if (config.timeout === false) {
-        this.isEnabled = false;
-        return;
+      this.isEnabled = false;
+      return;
     }
 
     // User Whitelist Check
     this.currentUser = this.ha?.hass?.user?.name?.toLowerCase();
     if (config.users && Array.isArray(config.users)) {
-        const allowedUsers = config.users.map(u => u.toLowerCase());
-        if (!allowedUsers.includes(this.currentUser)) {
-            this.isEnabled = false;
-            return;
-        }
+      const allowedUsers = config.users.map((u) => u.toLowerCase());
+      if (!allowedUsers.includes(this.currentUser)) {
+        this.isEnabled = false;
+        return;
+      }
     }
 
     // Load Settings
@@ -150,8 +173,8 @@ class ViewTimeout {
 
     // 3. If no default home and no specific target, do nothing.
     if (!this.homeView && !specificTarget) {
-        this.stopTimer();
-        return;
+      this.stopTimer();
+      return;
     }
 
     // Run timer if not already running
@@ -181,36 +204,40 @@ class ViewTimeout {
     this.timer = setTimeout(() => this.executeRedirect(), this.timeoutDuration);
   }
 
-executeRedirect() {
+  executeRedirect() {
+    // Double check we are still on the right dashboard
     if (this.ha?.hass?.panelUrl !== this.activePanelUrl) {
-        this.stopTimer();
-        return;
+      this.stopTimer();
+      return;
     }
 
     this.stopTimer();
 
     try {
-        const activeEl = this.main?.activeElement || document.activeElement;
-        activeEl?.blur();
+      const activeEl = this.main?.activeElement || document.activeElement;
+      activeEl?.blur();
     } catch (e) {}
 
     const currentView = this.getCurrentView();
     const target = this.viewSpecificRedirects[currentView] ?? this.homeView;
 
     if (target) {
-        // target is always treated as a full path from the current
-        // dashboard's panel — never prefixed with activePanelUrl.
-        const path = target.startsWith("/") ? target : `/${target}`;
-        this.navigate(path);
+      // target is always treated as a full path from the site root —
+      // never prefixed with activePanelUrl. Use a leading "/" or not,
+      // both work the same.
+      const path = target.startsWith("/") ? target : `/${target}`;
+      this.navigate(path);
     }
-}
+  }
 
   navigate(path) {
     window.history.pushState(null, "", path);
-    window.dispatchEvent(new CustomEvent("location-changed", { 
-        bubbles: true, 
-        composed: true 
-    }));
+    window.dispatchEvent(
+      new CustomEvent("location-changed", {
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 }
 
